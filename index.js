@@ -8,18 +8,21 @@ app.use(bodyParser.json());
 const VERIFY_TOKEN = "idea_chatbot_verify_2026";
 const PAGE_ACCESS_TOKEN = "EAAXOFZBjxteABQtVoGB6fNJLOhZAH9JjoZAWBZBB5WiCe0dGpXjLwkV1qzAFtgb76B7zTBcaEBBclpKZBI6LbESPTa4duAZCvaMSKJ2WfK2oCQLAfilpfOHyLJwignxOGAxVt4jPWowqTxyFBJ1q53xq9E9JaOAqc8Il2A5Tf4Ke8zMXZAn1W0LhJTb770gSC9MGJZADAGLsgQZDZD";
 
-// Para trackear estado de cada usuario
-// { psid: estado }
+// Estado de cada usuario { psid: { state, blockedUntil } }
 const userStates = {};
 
 // Estados posibles
 const STATES = {
   FIRST_MESSAGE: "first_message",
   ASK_INTEREST: "ask_interest",
-  THANK_YOU: "thank_you",
+  BUTTON_CLICKED: "button_clicked",
+  BOT_DONE: "bot_done",
 };
 
-// GET /webhook - Verificación
+// Tiempo de bloqueo en ms (24 horas)
+const BLOCK_TIME = 24 * 60 * 60 * 1000;
+
+// GET /webhook - verificación
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
@@ -33,7 +36,7 @@ app.get("/webhook", (req, res) => {
   }
 });
 
-// POST /webhook - Recepción de mensajes
+// POST /webhook - mensajes y postbacks
 app.post("/webhook", (req, res) => {
   const body = req.body;
 
@@ -41,6 +44,12 @@ app.post("/webhook", (req, res) => {
     body.entry.forEach(entry => {
       const webhookEvent = entry.messaging[0];
       const senderPsid = webhookEvent.sender.id;
+
+      // Verificar bloqueo de 24 horas
+      const user = userStates[senderPsid];
+      if (user && user.blockedUntil && Date.now() < user.blockedUntil) {
+        return; // no hacer nada, bot bloqueado
+      }
 
       if (webhookEvent.message) {
         handleMessage(senderPsid, webhookEvent.message);
@@ -54,58 +63,68 @@ app.post("/webhook", (req, res) => {
   }
 });
 
-// Manejo de mensajes de texto
+// Manejo de mensajes
 function handleMessage(psid, receivedMessage) {
   const text = receivedMessage.text ? receivedMessage.text.trim().toLowerCase() : "";
 
-  // Obtener estado del usuario, por defecto FIRST_MESSAGE
-  let state = userStates[psid] || STATES.FIRST_MESSAGE;
+  let state = (userStates[psid] && userStates[psid].state) || STATES.FIRST_MESSAGE;
 
   switch (state) {
     case STATES.FIRST_MESSAGE:
       sendWelcome(psid);
-      userStates[psid] = STATES.ASK_INTEREST;
+      userStates[psid] = { state: STATES.ASK_INTEREST };
       break;
 
     case STATES.ASK_INTEREST:
-      // Si escribe texto en vez de click, repetir los botones
-      sendInterestButtons(psid, "Por favor selecciona una opción haciendo clic en uno de los botones:");
+      // Si escribe texto en vez de click, repetir botones
+      sendInterestButtons(psid, "Por favor selecciona una opción usando los botones:");
       break;
 
-    case STATES.THANK_YOU:
-      // Si ya dijo gracias, repetir botón de ver catálogo
-      sendCatalogButton(psid, "Si quieres, puedes ver nuestro catálogo mientras esperas:");
+    case STATES.BUTTON_CLICKED:
+      // Recordatorio único
+      sendTextMessage(psid, "Nuestro asesor estará contigo pronto 🙂. Por favor, espera un momento.");
+      // Bloqueamos el bot por 24 horas
+      userStates[psid].blockedUntil = Date.now() + BLOCK_TIME;
+      userStates[psid].state = STATES.BOT_DONE;
       break;
 
     default:
-      sendTextMessage(psid, "Disculpa, no entendí. Intenta usar los botones.");
+      sendTextMessage(psid, "Disculpa, no entendí. Por favor usa los botones.");
   }
 }
 
-// Manejo de postbacks (clic en botones)
+// Manejo de postbacks
 function handlePostback(psid, postback) {
   const payload = postback.payload;
 
-  if (payload === "INTERES_ACABADOS" || payload === "INTERES_VENTANAS" || payload === "INTERES_PUERTAS") {
-    sendTextMessage(psid, "¡Gracias! Un asesor se pondrá en contacto contigo en unos minutos.");
+  if (
+    payload === "INTERES_ACABADOS" ||
+    payload === "INTERES_VENTANAS" ||
+    payload === "INTERES_PUERTAS"
+  ) {
+    sendTextMessage(psid, "¡Gracias! Un asesor se pondrá en contacto contigo en unos minutos 🙂");
     sendCatalogButton(psid, "Mientras tanto, puedes ver nuestro catálogo:");
-    userStates[psid] = STATES.THANK_YOU;
+    userStates[psid] = { state: STATES.BUTTON_CLICKED };
+  } else if (payload === "HABLA_CON_ASESOR") {
+    sendTextMessage(psid, "Un asesor se pondrá en contacto contigo en breve 🙂");
+    userStates[psid] = { state: STATES.BOT_DONE, blockedUntil: Date.now() + BLOCK_TIME };
   } else if (payload === "VER_CATALOGO") {
-    sendTextMessage(psid, "¡Perfecto! Aquí tienes el catálogo: [LINK_A_TU_CATALOGO]");
+    sendTextMessage(psid, "Aquí tienes nuestro catálogo: [LINK_O_PDF]");
+    userStates[psid] = { state: STATES.BOT_DONE, blockedUntil: Date.now() + BLOCK_TIME };
   } else {
     sendTextMessage(psid, "Disculpa, no entendí. Por favor usa los botones.");
   }
 }
 
-// Enviar mensaje de bienvenida
+// Mensaje de bienvenida
 function sendWelcome(psid) {
-  const message = `¡Hola! 👋 Gracias por ponerte en contacto con nosotros. 
-Somos una empresa dedicada a la fabricación e instalación de acabados arquitectónicos, ventanas y puertas de aluminio y vidrio, sistemas de vidrio templado, laminado, insulado, barandas y cielos rasos.  
+  const message = `¡Hola! 👋 Gracias por ponerte en contacto con nosotros.
+Somos expertos en fabricación e instalación de acabados arquitectónicos, ventanas y puertas de aluminio y vidrio, sistemas de vidrio templado, laminado, insulado, barandas y cielos rasos.
 ¿En qué estás interesado?`;
   sendInterestButtons(psid, message);
 }
 
-// Botones de selección de interés
+// Botones de interés (ahora 4)
 function sendInterestButtons(psid, text) {
   const body = {
     recipient: { id: psid },
@@ -119,6 +138,7 @@ function sendInterestButtons(psid, text) {
             { type: "postback", title: "Acabados arquitectónicos", payload: "INTERES_ACABADOS" },
             { type: "postback", title: "Ventanas a medida", payload: "INTERES_VENTANAS" },
             { type: "postback", title: "Puertas a medida", payload: "INTERES_PUERTAS" },
+            { type: "postback", title: "Habla con asesor", payload: "HABLA_CON_ASESOR" },
           ],
         },
       },
@@ -127,7 +147,7 @@ function sendInterestButtons(psid, text) {
   callSendAPI(body);
 }
 
-// Botón de catálogo
+// Botón catálogo
 function sendCatalogButton(psid, text) {
   const body = {
     recipient: { id: psid },
@@ -137,9 +157,7 @@ function sendCatalogButton(psid, text) {
         payload: {
           template_type: "button",
           text: text,
-          buttons: [
-            { type: "postback", title: "Ver catálogo", payload: "VER_CATALOGO" },
-          ],
+          buttons: [{ type: "postback", title: "Ver catálogo", payload: "VER_CATALOGO" }],
         },
       },
     },
@@ -147,9 +165,9 @@ function sendCatalogButton(psid, text) {
   callSendAPI(body);
 }
 
-// Enviar mensaje simple
+// Mensaje simple
 function sendTextMessage(psid, text) {
-  const body = { recipient: { id: psid }, message: { text: text } };
+  const body = { recipient: { id: psid }, message: { text } };
   callSendAPI(body);
 }
 
