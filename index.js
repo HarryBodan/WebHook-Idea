@@ -12,13 +12,26 @@ app.use(express.static(path.join(__dirname, "public")));
 const VERIFY_TOKEN = "idea_chatbot_verify_2026";
 const PAGE_ACCESS_TOKEN = "EAAXOFZBjxteABQv0GPLZAU5eyOKZCHqZBA6TNVxJRZAHTfENV2A3surebCiMszlNImzVl3bKzz544qQbRHR1Grvkx9fi9ZCbYg7GquJ6g4Q5rZBXYV0kDbSppcyiapOJOZCmiSkSbKo7iMw6fW7ISnCOJ3TLX3jYnd1a5DcwZBPkc6xGlnMno5R605UPiRXD0ZCJBFCoZBjqrOlrwZDZD";
 
-// Mantener estado por usuario
-const userStates = {};
-const STATES = {
-  NEW: "new",
-  INTEREST_SELECTED: "interest_selected",
-  CATALOG_SENT: "catalog_sent",
+// Estados del usuario
+const VALUES = {
+  ACABADOS: "INTERES_ACABADOS",
+  VENTANAS: "INTERES_VENTANAS",
+  PUERTAS: "INTERES_PUERTAS",
+  ASESOR: "HABLA_ASESOR",
+  VER_CATALOGO: "VER_CATALOGO"
 };
+
+const STATES = {
+  START: "start",
+  AWAITING_SELECTION: "awaiting_selection",
+  AWAITING_CATALOG_DECISION: "awaiting_catalog_decision",
+  HANDOVER: "handover",
+};
+
+// Almacenamiento en memoria: { [psid]: { state: string, lastInteraction: number } }
+const userSessions = {};
+
+const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
 // Verificación de webhook
 app.get("/webhook", (req, res) => {
@@ -42,6 +55,9 @@ app.post("/webhook", (req, res) => {
       const webhookEvent = entry.messaging[0];
       const senderPsid = webhookEvent.sender.id;
 
+      // Inicializar o limpiar sesión si pasó mucho tiempo
+      checkSession(senderPsid);
+
       if (webhookEvent.message) {
         handleMessage(senderPsid, webhookEvent.message);
       } else if (webhookEvent.postback) {
@@ -54,117 +70,182 @@ app.post("/webhook", (req, res) => {
   }
 });
 
+// Gestión de sesión
+function checkSession(psid) {
+  const now = Date.now();
+  if (!userSessions[psid]) {
+    userSessions[psid] = { state: STATES.START, lastInteraction: now };
+  } else {
+    const diff = now - userSessions[psid].lastInteraction;
+    // Si pasaron más de 24 horas, reiniciar a START independientemente del estado anterior
+    if (diff > ONE_DAY_MS) {
+      userSessions[psid] = { state: STATES.START, lastInteraction: now };
+    }
+  }
+}
+
+function updateLastInteraction(psid) {
+  if (userSessions[psid]) {
+    userSessions[psid].lastInteraction = Date.now();
+  }
+}
+
 // Manejo de mensajes de texto
 function handleMessage(psid, message) {
-  const text = message.text ? message.text.trim().toLowerCase() : "";
-  let state = userStates[psid] || STATES.NEW;
+  const session = userSessions[psid];
+  const text = message.text;
 
-  switch (state) {
-    case STATES.NEW:
-      sendWelcome(psid);
-      userStates[psid] = STATES.NEW; // Seguimos en NEW hasta que haga click
-      break;
-
-    case STATES.INTEREST_SELECTED:
-      sendTextMessage(psid, "Saludos, un asesor estará pronto con usted. 👌");
-      break;
-
-    case STATES.CATALOG_SENT:
-      sendTextMessage(psid, "Saludos, un asesor estará pronto con usted. 👌");
-      break;
-
-    default:
-      sendTextMessage(psid, "Saludos, un asesor estará pronto con usted. 👌");
+  // Si estamos en modo HANDOVER (ya atendido), ignoramos mensajes por 24h para no spammear al usuario ni interrumpir al humano.
+  // La sesión se reinicia automáticamente en checkSession si pasan 24h.
+  if (session.state === STATES.HANDOVER) {
+    return;
   }
+
+  // Si el usuario escribe algo en un estado donde esperamos acción (botones):
+  // Volvemos a enviar el menú o la pregunta correspondiente.
+  if (session.state === STATES.AWAITING_SELECTION || session.state === STATES.START) {
+    sendWelcome(psid);
+  } else if (session.state === STATES.AWAITING_CATALOG_DECISION) {
+    // Reenviar la pregunta del catálogo
+    sendCatalogQuestion(psid, "Para continuar, por favor selecciona una opción:");
+  }
+
+  updateLastInteraction(psid);
 }
 
-// Manejo de botones
+// Manejo de botones (Postbacks)
 function handlePostback(psid, postback) {
   const payload = postback.payload;
+  const session = userSessions[psid];
 
-  if (
-    payload === "INTERES_ACABADOS" ||
-    payload === "INTERES_VENTANAS" ||
-    payload === "INTERES_PUERTAS" ||
-    payload === "HABLA_ASESOR"
-  ) {
-    sendTextMessage(psid, "¡Gracias! Un asesor se pondrá en contacto contigo en unos minutos.");
-    sendCatalogButton(psid, "Mientras tanto, puedes ver nuestro catálogo:");
-    userStates[psid] = STATES.INTEREST_SELECTED;
-  } else if (payload === "VER_CATALOGO") {
+  // Actualizar interacción
+  updateLastInteraction(psid);
+
+  if ([VALUES.ACABADOS, VALUES.VENTANAS, VALUES.PUERTAS, VALUES.ASESOR].includes(payload)) {
+    // El usuario seleccionó un interés
+    sendTextMessage(psid, "¡Gracias! En unos minutos estaremos respondiendo o un asesor te responderá para asesorarte. 👌");
+
+    // De inmediato ofrecemos el catálogo
+    setTimeout(() => {
+      sendCatalogQuestion(psid, "¿Mientras tanto deseas ver nuestro catálogo?");
+    }, 1000);
+
+    session.state = STATES.AWAITING_CATALOG_DECISION;
+
+  } else if (payload === VALUES.VER_CATALOGO) {
     sendDocument(psid, "Catalogo Idea.pdf");
-    userStates[psid] = STATES.CATALOG_SENT;
+    // Finalizamos flujo automático
+    session.state = STATES.HANDOVER;
+
   } else {
-    sendTextMessage(psid, "Disculpa, no entendí. Por favor usa los botones.");
+    // Payload desconocido, reiniciar a welcome
+    sendWelcome(psid);
   }
 }
 
-// Mensaje de bienvenida con botones iniciales
+// ----------------------------------------------------------------------------
+// Funciones de Envío
+// ----------------------------------------------------------------------------
+
 function sendWelcome(psid) {
-  const message = `¡Hola! 👋 Gracias por contactarnos.  
-Somos expertos en acabados arquitectónicos, ventanas y puertas de aluminio y vidrio, sistemas de vidrio templado, laminado, insulado, barandas y cielos rasos.  
-¿En qué estás interesado?`;
+  // 1. Mensaje de Texto Bonito
+  const greeting = "Gracias por ponerse en contacto con nosotros.\n\nSomos una empresa dedicada a la fabricación e instalación de acabados arquitectónicos, ventanas y puertas de aluminio y vidrio, sistemas de vidrio templado, laminado, insulado, barandas y cielo raso.";
 
-  const buttons = [
-    { type: "postback", title: "Acabados arquitectónicos", payload: "INTERES_ACABADOS" },
-    { type: "postback", title: "Ventanas a medida", payload: "INTERES_VENTANAS" },
-    { type: "postback", title: "Puertas a medida", payload: "INTERES_PUERTAS" },
-    { type: "postback", title: "Habla con asesor", payload: "HABLA_ASESOR" },
-  ];
+  // Enviamos primero el texto
+  const bodyText = { recipient: { id: psid }, message: { text: greeting } };
 
-  sendButtonTemplate(psid, message, buttons);
+  callSendAPI(bodyText).then(() => {
+    // 2. Carrusel con opciones (más bonito que lista simple)
+    // Messenger Generic Template permite imagen + titulo + botones.
+    // Como no tenemos imagenes URL a mano, usaremos un Generic Template sin imagen (o icon por defecto si facebook lo permite, o imagen transparente).
+    // Nota: Generic template usualmente requiere imagen, pero a veces funciona sin ella o se puede usar Button Template si fueran menos de 3.
+    // Para 4 opciones, la mejor UX es un Carrusel de 2 tarjetas.
+
+    const carouselPayload = {
+      template_type: "generic",
+      elements: [
+        {
+          title: "¿En qué está interesado?",
+          subtitle: "Selecciona una categoría",
+          buttons: [
+            { type: "postback", title: "Acabados Arq.", payload: VALUES.ACABADOS },
+            { type: "postback", title: "Ventanas a medida", payload: VALUES.VENTANAS },
+            { type: "postback", title: "Puertas a medida", payload: VALUES.PUERTAS }
+          ]
+        },
+        {
+          title: "Asesoría Personalizada",
+          subtitle: "¿Prefieres hablar con un experto?",
+          buttons: [
+            { type: "postback", title: "Habla con asesor", payload: VALUES.ASESOR }
+          ]
+        }
+      ]
+    };
+
+    const bodyCarousel = {
+      recipient: { id: psid },
+      message: { attachment: { type: "template", payload: carouselPayload } }
+    };
+
+    callSendAPI(bodyCarousel);
+    userSessions[psid].state = STATES.AWAITING_SELECTION;
+  });
 }
 
-// Botón de catálogo
-function sendCatalogButton(psid, text) {
-  const buttons = [{ type: "postback", title: "Ver catálogo", payload: "VER_CATALOGO" }];
-  sendButtonTemplate(psid, text, buttons);
-}
+function sendCatalogQuestion(psid, textPrefix) {
+  // Boton individual para ver catálogo
+  const buttons = [{ type: "postback", title: "Ver catálogo", payload: VALUES.VER_CATALOGO }];
 
-// Enviar plantilla de botones
-function sendButtonTemplate(psid, text, buttons) {
   const body = {
     recipient: { id: psid },
     message: {
       attachment: {
         type: "template",
-        payload: { template_type: "button", text, buttons },
-      },
-    },
+        payload: { template_type: "button", text: textPrefix, buttons }
+      }
+    }
   };
   callSendAPI(body);
 }
 
-// Enviar mensaje simple
 function sendTextMessage(psid, text) {
   const body = { recipient: { id: psid }, message: { text } };
   callSendAPI(body);
 }
 
-// Enviar PDF como documento
 function sendDocument(psid, filename) {
-  const url = `https://webhook-idea.onrender.com/${encodeURIComponent(filename)}`;
+  // Asegúrate de que esta URL sea accesible públicamente y apunte a tu servidor
+  // En producción, usa tu dominio real.
+  const domain = "https://webhook-idea.onrender.com";
+  const url = `${domain}/${encodeURIComponent(filename)}`;
+
   const body = {
     recipient: { id: psid },
     message: {
       attachment: {
         type: "file",
-        payload: { url },
-      },
-    },
+        payload: { url }
+      }
+    }
   };
   callSendAPI(body);
 }
 
-// Llamada a Graph API
 function callSendAPI(body) {
-  fetch(`https://graph.facebook.com/v24.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
+  return fetch(`https://graph.facebook.com/v24.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   })
     .then(res => res.json())
-    .then(json => console.log("Mensaje enviado:", json))
+    .then(json => {
+      if (json.error) {
+        console.error("Error de Facebook:", json.error);
+      } else {
+        console.log("Mensaje enviado exitosamente.");
+      }
+    })
     .catch(err => console.error("Error enviando mensaje:", err));
 }
 
