@@ -52,6 +52,9 @@ app.post("/webhook", (req, res) => {
 
   if (body.object === "page") {
     body.entry.forEach(entry => {
+      // Validar que messaging exista y tenga elementos
+      if (!entry.messaging || entry.messaging.length === 0) return;
+
       const webhookEvent = entry.messaging[0];
       const senderPsid = webhookEvent.sender.id;
 
@@ -59,6 +62,10 @@ app.post("/webhook", (req, res) => {
       checkSession(senderPsid);
 
       if (webhookEvent.message) {
+        // IMPORTANTE: Ignorar mensajes que son ecos (mensajes enviados por el propio bot/admin)
+        if (webhookEvent.message.is_echo) {
+          return;
+        }
         handleMessage(senderPsid, webhookEvent.message);
       } else if (webhookEvent.postback) {
         handlePostback(senderPsid, webhookEvent.postback);
