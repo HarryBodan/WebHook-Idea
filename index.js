@@ -1,15 +1,17 @@
 const express = require("express");
 const bodyParser = require("body-parser");
 const fetch = require("node-fetch"); // node-fetch v2
-
+const path = require("path");
 const app = express();
+
 app.use(bodyParser.json());
+app.use(express.static("public")); // Para servir PDF
 
 const VERIFY_TOKEN = "idea_chatbot_verify_2026";
-const PAGE_ACCESS_TOKEN = "EAAXOFZBjxteABQtVoGB6fNJLOhZAH9JjoZAWBZBB5WiCe0dGpXjLwkV1qzAFtgb76B7zTBcaEBBclpKZBI6LbESPTa4duAZCvaMSKJ2WfK2oCQLAfilpfOHyLJwignxOGAxVt4jPWowqTxyFBJ1q53xq9E9JaOAqc8Il2A5Tf4Ke8zMXZAn1W0LhJTb770gSC9MGJZADAGLsgQZDZD";
+const PAGE_ACCESS_TOKEN = "TU_PAGE_ACCESS_TOKEN_AQUI";
 
-// Guardamos quienes ya hicieron el flujo completo (solo en memoria)
-const completedUsers = new Set();
+// Trackear usuarios que ya interactuaron
+const interactedUsers = {};
 
 // GET /webhook - Verificación
 app.get("/webhook", (req, res) => {
@@ -34,16 +36,16 @@ app.post("/webhook", (req, res) => {
       const webhookEvent = entry.messaging[0];
       const senderPsid = webhookEvent.sender.id;
 
-      if (completedUsers.has(senderPsid)) {
-        // Usuario ya completó flujo → solo mensaje profesional
-        sendTextMessage(senderPsid, "¡Saludos! Un asesor se pondrá en contacto contigo en breve. Muchas gracias por tu interés.");
-      } else {
-        // Usuario nuevo o que no terminó el flujo
-        if (webhookEvent.message) {
-          sendWelcome(senderPsid);
-        } else if (webhookEvent.postback) {
-          handlePostback(senderPsid, webhookEvent.postback);
-        }
+      if (interactedUsers[senderPsid]) {
+        // Ya interactuó antes
+        sendTextMessage(senderPsid, "Saludos, un asesor estará pronto con usted.");
+        return;
+      }
+
+      if (webhookEvent.message) {
+        handleMessage(senderPsid, webhookEvent.message);
+      } else if (webhookEvent.postback) {
+        handlePostback(senderPsid, webhookEvent.postback);
       }
     });
     res.status(200).send("EVENT_RECEIVED");
@@ -52,16 +54,38 @@ app.post("/webhook", (req, res) => {
   }
 });
 
-// Enviar mensaje de bienvenida + botones de interés
-function sendWelcome(psid) {
-  const message = `¡Hola! 👋 Gracias por contactarnos.
-Somos expertos en la fabricación e instalación de acabados arquitectónicos, ventanas y puertas de aluminio y vidrio, sistemas de vidrio templado, laminado, insulado, barandas y cielos rasos.
-Por favor, selecciona en qué estás interesado:`;
-  sendInterestButtons(psid, message);
+// Manejo de mensajes de texto
+function handleMessage(psid, receivedMessage) {
+  sendWelcome(psid);
+  interactedUsers[psid] = true;
 }
 
-// Botones de interés
-function sendInterestButtons(psid, text) {
+// Manejo de postbacks
+function handlePostback(psid, postback) {
+  const payload = postback.payload;
+
+  if (payload === "INTERES_ACABADOS" || payload === "INTERES_VENTANAS" || payload === "INTERES_PUERTAS") {
+    sendTextMessage(psid, "¡Gracias! Un asesor se pondrá en contacto contigo en unos minutos.");
+    sendCatalogButton(psid, "Mientras tanto, puedes ver nuestro catálogo:");
+  } else if (payload === "HABLAR_ASESOR") {
+    sendTextMessage(psid, "Un asesor estará pronto contigo.");
+  } else if (payload === "VER_CATALOGO") {
+    sendCatalog(psid);
+  } else {
+    sendTextMessage(psid, "Disculpa, no entendí. Por favor usa los botones.");
+  }
+}
+
+// Mensaje de bienvenida con botones iniciales
+function sendWelcome(psid) {
+  const message = `¡Hola! 👋 Gracias por ponerte en contacto con nosotros. 
+Somos expertos en acabados arquitectónicos, ventanas y puertas de aluminio y vidrio, sistemas de vidrio templado, laminado, insulado, barandas y cielos rasos.
+Por favor, selecciona una opción para continuar:`;
+  sendOptionsButtons(psid, message);
+}
+
+// Botones iniciales
+function sendOptionsButtons(psid, text) {
   const body = {
     recipient: { id: psid },
     message: {
@@ -74,7 +98,7 @@ function sendInterestButtons(psid, text) {
             { type: "postback", title: "Acabados arquitectónicos", payload: "INTERES_ACABADOS" },
             { type: "postback", title: "Ventanas a medida", payload: "INTERES_VENTANAS" },
             { type: "postback", title: "Puertas a medida", payload: "INTERES_PUERTAS" },
-            { type: "postback", title: "Habla con asesor", payload: "INTERES_ASESOR" }
+            { type: "postback", title: "Hablar con asesor", payload: "HABLAR_ASESOR" },
           ],
         },
       },
@@ -84,14 +108,18 @@ function sendInterestButtons(psid, text) {
 }
 
 // Botón de catálogo
-function sendCatalogButton(psid) {
+function sendCatalogButton(psid, text) {
   const body = {
     recipient: { id: psid },
     message: {
       attachment: {
-        type: "file",
+        type: "template",
         payload: {
-          url: "https://webhook-idea.onrender.com/Catalogo%20Idea.pdf" // PDF en la raíz de Render
+          template_type: "button",
+          text: text,
+          buttons: [
+            { type: "postback", title: "Ver catálogo", payload: "VER_CATALOGO" },
+          ],
         },
       },
     },
@@ -99,22 +127,27 @@ function sendCatalogButton(psid) {
   callSendAPI(body);
 }
 
-// Manejo de postbacks
-function handlePostback(psid, postback) {
-  const payload = postback.payload;
-
-  if (["INTERES_ACABADOS","INTERES_VENTANAS","INTERES_PUERTAS","INTERES_ASESOR"].includes(payload)) {
-    sendTextMessage(psid, "¡Gracias! Un asesor se pondrá en contacto contigo en breve.");
-    sendCatalogButton(psid); // Envía PDF
-    completedUsers.add(psid); // Marca como completado
-  } else {
-    sendTextMessage(psid, "Disculpa, no entendí. Por favor usa los botones.");
-  }
+// Enviar PDF de catálogo
+function sendCatalog(psid) {
+  const pdfUrl = "https://webhook-idea.onrender.com/Catalogo%20Idea.pdf"; // Asegúrate de que el PDF esté en /public
+  const body = {
+    recipient: { id: psid },
+    message: {
+      attachment: {
+        type: "file",
+        payload: {
+          url: pdfUrl,
+          is_reusable: true,
+        },
+      },
+    },
+  };
+  callSendAPI(body);
 }
 
-// Mensaje simple
+// Enviar mensaje de texto
 function sendTextMessage(psid, text) {
-  const body = { recipient: { id: psid }, message: { text } };
+  const body = { recipient: { id: psid }, message: { text: text } };
   callSendAPI(body);
 }
 
@@ -129,9 +162,6 @@ function callSendAPI(body) {
     .then(json => console.log("Mensaje enviado:", json))
     .catch(err => console.error("Error enviando mensaje:", err));
 }
-
-// Servir PDF desde la raíz
-app.use(express.static(__dirname));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Webhook corriendo en puerto ${PORT}`));
