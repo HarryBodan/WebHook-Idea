@@ -10,7 +10,7 @@ app.use(bodyParser.json());
 app.use(express.static(path.join(__dirname, "public")));
 
 const VERIFY_TOKEN = "idea_chatbot_verify_2026";
-const PAGE_ACCESS_TOKEN = "EAAXOFZBjxteABQv0GPLZAU5eyOKZCHqZBA6TNVxJRZAHTfENV2A3surebCiMszlNImzVl3bKzz544qQbRHR1Grvkx9fi9ZCbYg7GquJ6g4Q5rZBXYV0kDbSppcyiapOJOZCmiSkSbKo7iMw6fW7ISnCOJ3TLX3jYnd1a5DcwZBPkc6xGlnMno5R605UPiRXD0ZCJBFCoZBjqrOlrwZDZD";
+const PAGE_ACCESS_TOKEN = "EAAXOFZBjxteABQuvsi9BsyCQB31Dr8ZB5KkbMoZB7BuVbgqjNssr7Svz6rwmIk5fzTHa3Mq5qtdmZCxVtGYCMdnfZAkOFtHCBIRCi8Eyju5R03ZBowAz5KuiCycfrlmhmGs2yLbJJf7gurrGMylRlKmR15880UXcjtZAbq8xgmTxRyHsokEOnfg4EQ0zs9ag8r64856ZCcY54RePrFLvIFLYtq2dNTmDXvEUSU6fXnbiv0AGNHOC1SNMZBs4GxwgvZCokBvxbErHHmqcBj1FDLQmmZCRSqz";
 
 // Estados del usuario
 const VALUES = {
