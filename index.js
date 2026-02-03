@@ -1,3 +1,4 @@
+// index.js - Webhook Messenger con PDF
 const express = require("express");
 const bodyParser = require("body-parser");
 const fetch = require("node-fetch"); // node-fetch v2
@@ -8,21 +9,17 @@ app.use(bodyParser.json());
 const VERIFY_TOKEN = "idea_chatbot_verify_2026";
 const PAGE_ACCESS_TOKEN = "EAAXOFZBjxteABQtVoGB6fNJLOhZAH9JjoZAWBZBB5WiCe0dGpXjLwkV1qzAFtgb76B7zTBcaEBBclpKZBI6LbESPTa4duAZCvaMSKJ2WfK2oCQLAfilpfOHyLJwignxOGAxVt4jPWowqTxyFBJ1q53xq9E9JaOAqc8Il2A5Tf4Ke8zMXZAn1W0LhJTb770gSC9MGJZADAGLsgQZDZD";
 
-// Estado de cada usuario { psid: { state, blockedUntil } }
+// Para trackear estado de cada usuario
 const userStates = {};
 
 // Estados posibles
 const STATES = {
   FIRST_MESSAGE: "first_message",
   ASK_INTEREST: "ask_interest",
-  BUTTON_CLICKED: "button_clicked",
-  BOT_DONE: "bot_done",
+  THANK_YOU: "thank_you",
 };
 
-// Tiempo de bloqueo en ms (24 horas)
-const BLOCK_TIME = 24 * 60 * 60 * 1000;
-
-// GET /webhook - verificación
+// GET /webhook - Verificación de Facebook
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
@@ -36,7 +33,7 @@ app.get("/webhook", (req, res) => {
   }
 });
 
-// POST /webhook - mensajes y postbacks
+// POST /webhook - Recepción de mensajes y postbacks
 app.post("/webhook", (req, res) => {
   const body = req.body;
 
@@ -44,12 +41,6 @@ app.post("/webhook", (req, res) => {
     body.entry.forEach(entry => {
       const webhookEvent = entry.messaging[0];
       const senderPsid = webhookEvent.sender.id;
-
-      // Verificar bloqueo de 24 horas
-      const user = userStates[senderPsid];
-      if (user && user.blockedUntil && Date.now() < user.blockedUntil) {
-        return; // no hacer nada, bot bloqueado
-      }
 
       if (webhookEvent.message) {
         handleMessage(senderPsid, webhookEvent.message);
@@ -63,29 +54,27 @@ app.post("/webhook", (req, res) => {
   }
 });
 
-// Manejo de mensajes
+// Manejo de mensajes de texto
 function handleMessage(psid, receivedMessage) {
   const text = receivedMessage.text ? receivedMessage.text.trim().toLowerCase() : "";
 
-  let state = (userStates[psid] && userStates[psid].state) || STATES.FIRST_MESSAGE;
+  // Estado del usuario
+  let state = userStates[psid] || STATES.FIRST_MESSAGE;
 
   switch (state) {
     case STATES.FIRST_MESSAGE:
       sendWelcome(psid);
-      userStates[psid] = { state: STATES.ASK_INTEREST };
+      userStates[psid] = STATES.ASK_INTEREST;
       break;
 
     case STATES.ASK_INTEREST:
-      // Si escribe texto en vez de click, repetir botones
-      sendInterestButtons(psid, "Por favor selecciona una opción usando los botones:");
+      // Si escribe texto en vez de click, repetir los botones
+      sendInterestButtons(psid, "Por favor selecciona una opción haciendo clic en uno de los botones:");
       break;
 
-    case STATES.BUTTON_CLICKED:
-      // Recordatorio único
-      sendTextMessage(psid, "Nuestro asesor estará contigo pronto 🙂. Por favor, espera un momento.");
-      // Bloqueamos el bot por 24 horas
-      userStates[psid].blockedUntil = Date.now() + BLOCK_TIME;
-      userStates[psid].state = STATES.BOT_DONE;
+    case STATES.THANK_YOU:
+      // Solo recordar que el asesor estará pronto
+      sendTextMessage(psid, "Un asesor se pondrá en contacto contigo en unos minutos. Mientras tanto, puedes revisar nuestro catálogo.");
       break;
 
     default:
@@ -93,7 +82,7 @@ function handleMessage(psid, receivedMessage) {
   }
 }
 
-// Manejo de postbacks
+// Manejo de postbacks (clic en botones)
 function handlePostback(psid, postback) {
   const payload = postback.payload;
 
@@ -102,15 +91,13 @@ function handlePostback(psid, postback) {
     payload === "INTERES_VENTANAS" ||
     payload === "INTERES_PUERTAS"
   ) {
-    sendTextMessage(psid, "¡Gracias! Un asesor se pondrá en contacto contigo en unos minutos 🙂");
-    sendCatalogButton(psid, "Mientras tanto, puedes ver nuestro catálogo:");
-    userStates[psid] = { state: STATES.BUTTON_CLICKED };
-  } else if (payload === "HABLA_CON_ASESOR") {
-    sendTextMessage(psid, "Un asesor se pondrá en contacto contigo en breve 🙂");
-    userStates[psid] = { state: STATES.BOT_DONE, blockedUntil: Date.now() + BLOCK_TIME };
+    sendTextMessage(psid, "¡Gracias! Un asesor se pondrá en contacto contigo en unos minutos.");
+    sendCatalogAndAsesorButton(psid, "Mientras tanto, puedes ver nuestro catálogo o hablar con un asesor:");
+    userStates[psid] = STATES.THANK_YOU;
   } else if (payload === "VER_CATALOGO") {
-    sendTextMessage(psid, "Aquí tienes nuestro catálogo: [LINK_O_PDF]");
-    userStates[psid] = { state: STATES.BOT_DONE, blockedUntil: Date.now() + BLOCK_TIME };
+    sendPdfCatalog(psid);
+  } else if (payload === "HABLAR_ASESOR") {
+    sendTextMessage(psid, "¡Perfecto! Un asesor se pondrá en contacto contigo en breve.");
   } else {
     sendTextMessage(psid, "Disculpa, no entendí. Por favor usa los botones.");
   }
@@ -118,13 +105,13 @@ function handlePostback(psid, postback) {
 
 // Mensaje de bienvenida
 function sendWelcome(psid) {
-  const message = `¡Hola! 👋 Gracias por ponerte en contacto con nosotros.
-Somos expertos en fabricación e instalación de acabados arquitectónicos, ventanas y puertas de aluminio y vidrio, sistemas de vidrio templado, laminado, insulado, barandas y cielos rasos.
+  const message = `¡Hola! 👋 Gracias por ponerte en contacto con nosotros. 
+Somos una empresa especializada en la fabricación e instalación de acabados arquitectónicos, ventanas y puertas de aluminio y vidrio, sistemas de vidrio templado, laminado, insulado, barandas y cielos rasos.  
 ¿En qué estás interesado?`;
   sendInterestButtons(psid, message);
 }
 
-// Botones de interés (ahora 4)
+// Botones de selección de interés
 function sendInterestButtons(psid, text) {
   const body = {
     recipient: { id: psid },
@@ -138,7 +125,7 @@ function sendInterestButtons(psid, text) {
             { type: "postback", title: "Acabados arquitectónicos", payload: "INTERES_ACABADOS" },
             { type: "postback", title: "Ventanas a medida", payload: "INTERES_VENTANAS" },
             { type: "postback", title: "Puertas a medida", payload: "INTERES_PUERTAS" },
-            { type: "postback", title: "Habla con asesor", payload: "HABLA_CON_ASESOR" },
+            { type: "postback", title: "Habla con asesor", payload: "HABLAR_ASESOR" }
           ],
         },
       },
@@ -147,8 +134,8 @@ function sendInterestButtons(psid, text) {
   callSendAPI(body);
 }
 
-// Botón catálogo
-function sendCatalogButton(psid, text) {
+// Botón de catálogo + asesor
+function sendCatalogAndAsesorButton(psid, text) {
   const body = {
     recipient: { id: psid },
     message: {
@@ -157,7 +144,10 @@ function sendCatalogButton(psid, text) {
         payload: {
           template_type: "button",
           text: text,
-          buttons: [{ type: "postback", title: "Ver catálogo", payload: "VER_CATALOGO" }],
+          buttons: [
+            { type: "postback", title: "Ver catálogo", payload: "VER_CATALOGO" },
+            { type: "postback", title: "Habla con asesor", payload: "HABLAR_ASESOR" }
+          ],
         },
       },
     },
@@ -165,9 +155,26 @@ function sendCatalogButton(psid, text) {
   callSendAPI(body);
 }
 
+// Enviar PDF
+function sendPdfCatalog(psid) {
+  const body = {
+    recipient: { id: psid },
+    message: {
+      attachment: {
+        type: "file",
+        payload: {
+          url: "https://webhook-idea.onrender.com/Catalogo%20Idea.pdf",
+          is_reusable: true
+        }
+      }
+    }
+  };
+  callSendAPI(body);
+}
+
 // Mensaje simple
 function sendTextMessage(psid, text) {
-  const body = { recipient: { id: psid }, message: { text } };
+  const body = { recipient: { id: psid }, message: { text: text } };
   callSendAPI(body);
 }
 
@@ -183,5 +190,9 @@ function callSendAPI(body) {
     .catch(err => console.error("Error enviando mensaje:", err));
 }
 
+// Puerto
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Webhook corriendo en puerto ${PORT}`));
+
+// Servir PDF estático
+app.use(express.static(__dirname));
