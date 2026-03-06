@@ -10,7 +10,7 @@ app.use(bodyParser.json());
 app.use(express.static(path.join(__dirname, "public")));
 
 const VERIFY_TOKEN = "idea_chatbot_verify_2026";
-const PAGE_ACCESS_TOKEN = "EAAXOFZBjxteABQipbNS2BmBtV6Y6WytuLZAn50Q1pqsMklPbi8rjrMnYjCGXZAspBOZBnFCyFnAPMw3X5YQMLii41ScyASj97Y6hQdEAofxMU2FSQ2atjdMiYZCt8YRfPI03hO7vnhS3uUiJy2afIqQ3mIGwDhqnxXRgajcaeVSNT2eefvrgV4sCLwAta47WuqZAFeAuto6wZDZD";
+const PAGE_ACCESS_TOKEN = "EAAXOFZBjxteABipbNS2BmBtV6Y6WytuLZAn50Q1pqsMklPbi8rjrMnYjCGXZAspBOZBnFCyFnAPMw3X5YQMLii41ScyASj97Y6hQdEAofxMU2FSQ2atjdMiYZCt8YRfPI03hO7vnhS3uUiJy2afIqQ3mIGwDhnxXRgajcaeVSNT2eefvrgV4sCLwAta47WuqZAFeAuto6wZDZD";
 
 // Estados del usuario
 const VALUES = {
@@ -28,7 +28,7 @@ const STATES = {
   HANDOVER: "handover",
 };
 
-// Almacenamiento en memoria: { [psid]: { state: string, lastInteraction: number } }
+// Almacenamiento en memoria: { [psid]: { state: string, lastInteraction: number, processing: boolean } }
 const userSessions = {};
 
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
@@ -52,20 +52,15 @@ app.post("/webhook", (req, res) => {
 
   if (body.object === "page") {
     body.entry.forEach(entry => {
-      // Validar que messaging exista y tenga elementos
       if (!entry.messaging || entry.messaging.length === 0) return;
 
       const webhookEvent = entry.messaging[0];
       const senderPsid = webhookEvent.sender.id;
 
-      // Inicializar o limpiar sesión si pasó mucho tiempo
       checkSession(senderPsid);
 
       if (webhookEvent.message) {
-        // IMPORTANTE: Ignorar mensajes que son ecos (mensajes enviados por el propio bot/admin)
-        if (webhookEvent.message.is_echo) {
-          return;
-        }
+        if (webhookEvent.message.is_echo) return;
         handleMessage(senderPsid, webhookEvent.message);
       } else if (webhookEvent.postback) {
         handlePostback(senderPsid, webhookEvent.postback);
@@ -81,12 +76,11 @@ app.post("/webhook", (req, res) => {
 function checkSession(psid) {
   const now = Date.now();
   if (!userSessions[psid]) {
-    userSessions[psid] = { state: STATES.START, lastInteraction: now };
+    userSessions[psid] = { state: STATES.START, lastInteraction: now, processing: false };
   } else {
     const diff = now - userSessions[psid].lastInteraction;
-    // Si pasaron más de 24 horas, reiniciar a START independientemente del estado anterior
     if (diff > ONE_DAY_MS) {
-      userSessions[psid] = { state: STATES.START, lastInteraction: now };
+      userSessions[psid] = { state: STATES.START, lastInteraction: now, processing: false };
     }
   }
 }
@@ -100,24 +94,26 @@ function updateLastInteraction(psid) {
 // Manejo de mensajes de texto
 function handleMessage(psid, message) {
   const session = userSessions[psid];
-  const text = message.text;
 
-  // Si estamos en modo HANDOVER (ya atendido), ignoramos mensajes por 24h para no spammear al usuario ni interrumpir al humano.
-  // La sesión se reinicia automáticamente en checkSession si pasan 24h.
-  if (session.state === STATES.HANDOVER) {
+  // Silencio en HANDOVER
+  if (session.state === STATES.HANDOVER) return;
+
+  // Evitar duplicados si ya se está procesando una respuesta
+  if (session.processing) {
+    console.log(`Mensaje ignorado (procesando previo) para PSID: ${psid}`);
     return;
   }
 
-  // Si el usuario escribe algo en un estado donde esperamos acción (botones):
-  // Volvemos a enviar el menú o la pregunta correspondiente.
-  if (session.state === STATES.AWAITING_SELECTION || session.state === STATES.START) {
-    sendWelcome(psid);
-  } else if (session.state === STATES.AWAITING_CATALOG_DECISION) {
-    // Reenviar la pregunta del catálogo
-    sendCatalogQuestion(psid, "Para continuar, por favor selecciona una opción:");
-  }
-
+  session.processing = true;
   updateLastInteraction(psid);
+
+  if (session.state === STATES.AWAITING_SELECTION || session.state === STATES.START) {
+    sendWelcome(psid).finally(() => { session.processing = false; });
+  } else if (session.state === STATES.AWAITING_CATALOG_DECISION) {
+    sendCatalogQuestion(psid, "Para continuar, por favor selecciona una opción:").finally(() => { session.processing = false; });
+  } else {
+    session.processing = false;
+  }
 }
 
 // Manejo de botones (Postbacks)
@@ -125,28 +121,26 @@ function handlePostback(psid, postback) {
   const payload = postback.payload;
   const session = userSessions[psid];
 
-  // Actualizar interacción
+  if (session.processing) return;
+  session.processing = true;
   updateLastInteraction(psid);
 
   if ([VALUES.ACABADOS, VALUES.VENTANAS, VALUES.PUERTAS, VALUES.ASESOR].includes(payload)) {
-    // El usuario seleccionó un interés
-    sendTextMessage(psid, "¡Gracias! En unos minutos estaremos respondiendo o un asesor te responderá para asesorarte. 👌");
-
-    // De inmediato ofrecemos el catálogo
-    setTimeout(() => {
-      sendCatalogQuestion(psid, "¿Mientras tanto deseas ver nuestro catálogo?");
-    }, 1000);
-
+    sendTextMessage(psid, "¡Gracias! En unos minutos estaremos respondiendo o un asesor te responderá para asesorarte. 👌").then(() => {
+      setTimeout(() => {
+        sendCatalogQuestion(psid, "¿Mientras tanto deseas ver nuestro catálogo?").finally(() => { session.processing = false; });
+      }, 1500);
+    });
     session.state = STATES.AWAITING_CATALOG_DECISION;
 
   } else if (payload === VALUES.VER_CATALOGO) {
-    sendDocument(psid, "Catalogo Idea.pdf");
-    // Finalizamos flujo automático
-    session.state = STATES.HANDOVER;
+    sendDocument(psid, "Catalogo Idea.pdf").finally(() => {
+      session.processing = false;
+      session.state = STATES.HANDOVER;
+    });
 
   } else {
-    // Payload desconocido, reiniciar a welcome
-    sendWelcome(psid);
+    sendWelcome(psid).finally(() => { session.processing = false; });
   }
 }
 
@@ -154,20 +148,26 @@ function handlePostback(psid, postback) {
 // Funciones de Envío
 // ----------------------------------------------------------------------------
 
-function sendWelcome(psid) {
-  // 1. Mensaje de Texto Bonito
-  const greeting = "Gracias por ponerse en contacto con nosotros.\n\nSomos una empresa dedicada a la fabricación e instalación de acabados arquitectónicos, ventanas y puertas de aluminio y vidrio, sistemas de vidrio templado, laminado, insulado, barandas y cielo raso.";
+async function sendWelcome(psid) {
+  // 1. Mensaje de Bienvenida Inicial (Intro)
+  const introMsg = `👋 Bienvenido a IDEA Nicaragua.
 
-  // Enviamos primero el texto
-  const bodyText = { recipient: { id: psid }, message: { text: greeting } };
+🏢 Especialistas en soluciones en aluminio y vidrio para proyectos residenciales y comerciales.
+Indíquenos qué tipo de proyecto desea desarrollar y con gusto le brindaremos asesoría personalizada.
 
-  callSendAPI(bodyText).then(() => {
-    // 2. Carrusel con opciones (más bonito que lista simple)
-    // Messenger Generic Template permite imagen + titulo + botones.
-    // Como no tenemos imagenes URL a mano, usaremos un Generic Template sin imagen (o icon por defecto si facebook lo permite, o imagen transparente).
-    // Nota: Generic template usualmente requiere imagen, pero a veces funciona sin ella o se puede usar Button Template si fueran menos de 3.
-    // Para 4 opciones, la mejor UX es un Carrusel de 2 tarjetas.
+📥 Puede consultar nuestro catálogo en el siguiente enlace:
+https://oneplustechnologys.com/Idea/Catalogo-Idea.pdf`;
 
+  // 2. Mensaje de Descripción de servicios
+  const servicesMsg = "Gracias por ponerse en contacto con nosotros.\n\nSomos una empresa dedicada a la fabricación e instalación de acabados arquitectónicos, ventanas y puertas de aluminio y vidrio, sistemas de vidrio templado, laminado, insulado, barandas y cielo raso.";
+
+  try {
+    // Enviamos primero el intro
+    await sendTextMessageAsync(psid, introMsg);
+    // Luego el servicios
+    await sendTextMessageAsync(psid, servicesMsg);
+
+    // Finalmente el carrusel
     const carouselPayload = {
       template_type: "generic",
       elements: [
@@ -175,9 +175,9 @@ function sendWelcome(psid) {
           title: "¿En qué está interesado?",
           subtitle: "Selecciona una categoría",
           buttons: [
-            { type: "postback", title: "Ventanas", payload: VALUES.ACABADOS },
-            { type: "postback", title: "Puertas", payload: VALUES.VENTANAS },
-            { type: "postback", title: "Fachadas Comerciales", payload: VALUES.PUERTAS }
+            { type: "postback", title: "Acabados Arq.", payload: VALUES.ACABADOS },
+            { type: "postback", title: "Ventanas a medida", payload: VALUES.VENTANAS },
+            { type: "postback", title: "Puertas a medida", payload: VALUES.PUERTAS }
           ]
         },
         {
@@ -195,15 +195,15 @@ function sendWelcome(psid) {
       message: { attachment: { type: "template", payload: carouselPayload } }
     };
 
-    callSendAPI(bodyCarousel);
+    await callSendAPI(bodyCarousel);
     userSessions[psid].state = STATES.AWAITING_SELECTION;
-  });
+  } catch (err) {
+    console.error("Error en sendWelcome:", err);
+  }
 }
 
 function sendCatalogQuestion(psid, textPrefix) {
-  // Boton individual para ver catálogo
   const buttons = [{ type: "postback", title: "Ver catálogo", payload: VALUES.VER_CATALOGO }];
-
   const body = {
     recipient: { id: psid },
     message: {
@@ -213,20 +213,21 @@ function sendCatalogQuestion(psid, textPrefix) {
       }
     }
   };
-  callSendAPI(body);
+  return callSendAPI(body);
 }
 
 function sendTextMessage(psid, text) {
   const body = { recipient: { id: psid }, message: { text } };
-  callSendAPI(body);
+  return callSendAPI(body);
+}
+
+function sendTextMessageAsync(psid, text) {
+  return sendTextMessage(psid, text);
 }
 
 function sendDocument(psid, filename) {
-  // Asegúrate de que esta URL sea accesible públicamente y apunte a tu servidor
-  // En producción, usa tu dominio real.
   const domain = "https://webhook-idea.onrender.com";
   const url = `${domain}/${encodeURIComponent(filename)}`;
-
   const body = {
     recipient: { id: psid },
     message: {
@@ -236,7 +237,7 @@ function sendDocument(psid, filename) {
       }
     }
   };
-  callSendAPI(body);
+  return callSendAPI(body);
 }
 
 function callSendAPI(body) {
@@ -249,11 +250,15 @@ function callSendAPI(body) {
     .then(json => {
       if (json.error) {
         console.error("Error de Facebook:", json.error);
-      } else {
-        console.log("Mensaje enviado exitosamente.");
+        throw json.error;
       }
+      console.log("Mensaje enviado exitosamente.");
+      return json;
     })
-    .catch(err => console.error("Error enviando mensaje:", err));
+    .catch(err => {
+      console.error("Error enviando mensaje:", err);
+      throw err;
+    });
 }
 
 const PORT = process.env.PORT || 3000;
