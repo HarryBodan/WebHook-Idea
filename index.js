@@ -142,55 +142,49 @@ function handlePostback(psid, postback) {
 // ----------------------------------------------------------------------------
 
 function sendWelcome(psid) {
-  // 1. Mensaje de Bienvenida Inicial (Intro)
-  const introMsg = `👋 Bienvenido a IDEA Nicaragua.
+  const welcomeMsg = `Bienvenido a IDEA Nicaragua 👋🏻 Gracias por ponerse en contacto con nosotros.
 
-🏢 Especialistas en soluciones en aluminio y vidrio para proyectos residenciales y comerciales.
-Indíquenos qué tipo de proyecto desea desarrollar y con gusto le brindaremos asesoría personalizada.
+Somos una empresa 🏢 dedicada a la fabricación e instalación de acabados arquitectónicos ; ventanas y puertas de aluminio y vidrio ; sistemas de vidrio templado, laminado e insulado;  barandas y cielo raso residenciales, comerciales e industriales. 
 
 📥 Puede consultar nuestro catálogo en el siguiente enlace:
-https://oneplustechnologys.com/Idea/Catalogo-Idea.pdf`;
+https://oneplustechnologys.com/Idea/Catalogo-Idea.pdf
 
-  // 2. Mensaje de Descripción de servicios
-  const servicesMsg = "Gracias por ponerse en contacto con nosotros.\n\nSomos una empresa dedicada a la fabricación e instalación de acabados arquitectónicos, ventanas y puertas de aluminio y vidrio, sistemas de vidrio templado, laminado, insulado, barandas y cielo raso.";
+Porfavor Indíquenos qué tipo de proyecto desea desarrollar y con gusto una de nuestros agentes le estará brindando asesoría personalizada.`;
 
-  // Enviamos en secuencia para asegurar el orden
-  sendTextMessage(psid, introMsg);
+  // Enviamos el mensaje de texto único
+  sendTextMessage(psid, welcomeMsg);
 
+  // Enviamos los botones después de una pequeña pausa para asegurar que el mensaje de texto llegue primero visualmente
   setTimeout(() => {
-    sendTextMessage(psid, servicesMsg);
+    const carouselPayload = {
+      template_type: "generic",
+      elements: [
+        {
+          title: "¿En qué está interesado?",
+          subtitle: "Selecciona una categoría",
+          buttons: [
+            { type: "postback", title: "Ventanas", payload: VALUES.ACABADOS },
+            { type: "postback", title: "Puertas", payload: VALUES.VENTANAS },
+            { type: "postback", title: "Fachadas Comerciales", payload: VALUES.PUERTAS }
+          ]
+        },
+        {
+          title: "Asesoría Personalizada",
+          subtitle: "¿Prefieres hablar con un experto?",
+          buttons: [
+            { type: "postback", title: "Habla con asesor", payload: VALUES.ASESOR }
+          ]
+        }
+      ]
+    };
 
-    setTimeout(() => {
-      const carouselPayload = {
-        template_type: "generic",
-        elements: [
-          {
-            title: "¿En qué está interesado?",
-            subtitle: "Selecciona una categoría",
-            buttons: [
-              { type: "postback", title: "Ventanas", payload: VALUES.ACABADOS },
-              { type: "postback", title: "Puertas", payload: VALUES.VENTANAS },
-              { type: "postback", title: "Fachadas Comerciales", payload: VALUES.PUERTAS }
-            ]
-          },
-          {
-            title: "Asesoría Personalizada",
-            subtitle: "¿Prefieres hablar con un experto?",
-            buttons: [
-              { type: "postback", title: "Habla con asesor", payload: VALUES.ASESOR }
-            ]
-          }
-        ]
-      };
+    const bodyCarousel = {
+      recipient: { id: psid },
+      message: { attachment: { type: "template", payload: carouselPayload } }
+    };
 
-      const bodyCarousel = {
-        recipient: { id: psid },
-        message: { attachment: { type: "template", payload: carouselPayload } }
-      };
-
-      callSendAPI(bodyCarousel);
-      userSessions[psid].state = STATES.AWAITING_SELECTION;
-    }, 1000);
+    callSendAPI(bodyCarousel);
+    userSessions[psid].state = STATES.AWAITING_SELECTION;
   }, 1000);
 }
 
