@@ -168,9 +168,9 @@ https://oneplustechnologys.com/Idea/Catalogo-Idea.pdf`;
             title: "¿En qué está interesado?",
             subtitle: "Selecciona una categoría",
             buttons: [
-              { type: "postback", title: "Acabados Arq.", payload: VALUES.ACABADOS },
-              { type: "postback", title: "Ventanas a medida", payload: VALUES.VENTANAS },
-              { type: "postback", title: "Puertas a medida", payload: VALUES.PUERTAS }
+              { type: "postback", title: "Ventanas", payload: VALUES.ACABADOS },
+              { type: "postback", title: "Puertas", payload: VALUES.VENTANAS },
+              { type: "postback", title: "Fachadas Comerciales", payload: VALUES.PUERTAS }
             ]
           },
           {
